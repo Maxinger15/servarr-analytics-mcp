@@ -91,4 +91,29 @@ describe("tool registry", () => {
 
     await expect(tool.handler({ app: "prowlarr" }, { config: testConfig })).rejects.toThrow(/not supported for prowlarr/);
   });
+
+  it("filters specialized history tools locally without unsupported eventType queries", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({
+        page: 1,
+        pageSize: 10,
+        totalRecords: 2,
+        records: [
+          { id: 1, eventType: "grabbed", sourceTitle: "matched" },
+          { id: 2, eventType: "downloadFailed", sourceTitle: "filtered" }
+        ]
+      }), { status: 200 })
+    );
+    const tool = createTools().find((candidate) => candidate.name === "get_grab_history");
+    if (!tool) {
+      throw new Error("get_grab_history is not registered");
+    }
+
+    const result = await tool.handler({ app: "sonarr", detail: "verbose", pageSize: 10 }, { config: testConfig }) as {
+      records: Array<{ eventType: string }>;
+    };
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("eventType=");
+    expect(result.records).toEqual([{ id: 1, eventType: "grabbed", sourceTitle: "matched" }]);
+  });
 });

@@ -19,6 +19,7 @@ interface DirectToolSpec {
   supportedApps?: AppName[];
   schema?: z.ZodType;
   query?: (args: AnyArgs) => Record<string, unknown>;
+  filter?: (item: unknown, app: AppName) => boolean;
 }
 
 function appFromArgs(args: AnyArgs): AppName {
@@ -43,12 +44,13 @@ function directTool(spec: DirectToolSpec): ToolDefinition {
         method: spec.method ?? "GET",
         ...(query ? { query } : {})
       });
+      const filteredData = spec.filter ? filterResponseItems(data, (item) => spec.filter?.(item, app) ?? true) : data;
       const nextOptions = {
         ...(castArgs as CommonQueryOptions),
         page: ((castArgs.page as number | undefined) ?? 1) + 1
       };
       const nextCursor = encodeCursor(app, path, nextOptions, nextPageQuery(query, nextOptions.page));
-      return shapeResult(data, castArgs as CommonQueryOptions, { app, endpoint: path, nextCursor });
+      return shapeResult(filteredData, castArgs as CommonQueryOptions, { app, endpoint: path, nextCursor });
     }
   };
 }
@@ -192,28 +194,32 @@ const appReadTools: DirectToolSpec[] = [
     title: "Get Grab History",
     description: "Return grab history records.",
     path: "history",
-    query: (args) => ({ ...historyQuery(args), eventType: "grabbed" })
+    query: historyQuery,
+    filter: historyEventFilter(["grabbed", "grab"])
   },
   {
     name: "get_import_history",
     title: "Get Import History",
     description: "Return import/download-folder-imported history records.",
     path: "history",
-    query: (args) => ({ ...historyQuery(args), eventType: "downloadFolderImported" })
+    query: historyQuery,
+    filter: historyEventFilter(["downloadFolderImported", "movieFileImported", "episodeFileImported"])
   },
   {
     name: "get_failed_history",
     title: "Get Failed History",
     description: "Return failed history records.",
     path: "history",
-    query: (args) => ({ ...historyQuery(args), eventType: "downloadFailed" })
+    query: historyQuery,
+    filter: historyEventFilter(["downloadFailed", "downloadFailedFinished"])
   },
   {
     name: "get_deleted_history",
     title: "Get Deleted History",
     description: "Return deleted history records.",
     path: "history",
-    query: (args) => ({ ...historyQuery(args), eventType: "movieFileDeleted" })
+    query: historyQuery,
+    filter: (_item, app) => historyEventMatches(_item, app === "sonarr" ? ["episodeFileDeleted"] : ["movieFileDeleted"])
   },
   {
     name: "get_queue",
@@ -403,6 +409,40 @@ function historyQuery(args: AnyArgs): Record<string, unknown> {
     sortKey: "date",
     sortDirection: "descending"
   };
+}
+
+function filterResponseItems(data: unknown, predicate: (item: unknown) => boolean): unknown {
+  if (Array.isArray(data)) {
+    return data.filter(predicate);
+  }
+  if (!data || typeof data !== "object") {
+    return data;
+  }
+
+  const record = data as Record<string, unknown>;
+  for (const key of ["records", "items", "results"]) {
+    if (Array.isArray(record[key])) {
+      const filtered = (record[key] as unknown[]).filter(predicate);
+      return {
+        ...record,
+        [key]: filtered,
+        totalRecords: filtered.length
+      };
+    }
+  }
+  return data;
+}
+
+function historyEventFilter(eventTypes: string[]): (item: unknown) => boolean {
+  return (item) => historyEventMatches(item, eventTypes);
+}
+
+function historyEventMatches(item: unknown, eventTypes: string[]): boolean {
+  if (!item || typeof item !== "object") {
+    return false;
+  }
+  const eventType = (item as Record<string, unknown>).eventType;
+  return typeof eventType === "string" && eventTypes.includes(eventType);
 }
 
 function queueQuery(args: AnyArgs): Record<string, unknown> {

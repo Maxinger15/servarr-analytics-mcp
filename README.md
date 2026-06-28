@@ -103,6 +103,9 @@ Configure only the apps you want to expose. Each configured app requires both UR
 | `RADARR_API_KEY` | optional | Radarr API key. |
 | `PROWLARR_URL` | optional | Prowlarr base URL. |
 | `PROWLARR_API_KEY` | optional | Prowlarr API key. |
+| `SONARR_API_BASE_PATH` | optional | API base path. Defaults to `/api/v3`. |
+| `RADARR_API_BASE_PATH` | optional | API base path. Defaults to `/api/v3`. |
+| `PROWLARR_API_BASE_PATH` | optional | API base path. Defaults to `/api/v1`. |
 | `SERVARR_TIMEOUT_MS` | optional | HTTP timeout. Defaults to `30000`. |
 | `SERVARR_BACKUP_DIR` | optional | Backup directory. Defaults to `.servarr-analytics-backups`. |
 
@@ -148,6 +151,8 @@ Defaults protect the client context window:
 
 Mutating tools require `confirm: true`. Restore and patch application also require `dryRun: false`.
 
+Restore and patch operations are constrained by a safe endpoint allowlist. Collection updates such as quality profiles, custom formats, download clients, indexers, notifications, tags, and root folders must target a specific item id, for example `qualityprofile/3`. Singleton config endpoints such as `config/naming` and `config/mediamanagement` may be updated directly. A real backup restore also requires a specific `app` target.
+
 Examples:
 
 ```json
@@ -171,8 +176,11 @@ Patch application:
     {
       "app": "sonarr",
       "method": "PUT",
-      "path": "config/naming",
-      "body": {}
+      "path": "qualityprofile/3",
+      "body": {
+        "id": 3,
+        "name": "HD-1080p"
+      }
     }
   ]
 }

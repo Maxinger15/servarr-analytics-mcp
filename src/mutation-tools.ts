@@ -3,13 +3,17 @@ import { clientFor } from "./client.js";
 import { mutationSchema } from "./schemas.js";
 import type { ToolDefinition } from "./types.js";
 
+type MutationArgs = z.infer<typeof mutationSchema>;
+type JsonRecord = Record<string, unknown>;
+
 type MutationSpec = {
   name: string;
   title: string;
   description: string;
   method: "POST" | "PUT" | "DELETE";
-  path: string | ((args: z.infer<typeof mutationSchema>) => string);
+  path: string | ((args: MutationArgs) => string);
   bulk?: boolean;
+  customHandler?: (args: MutationArgs, context: Parameters<ToolDefinition["handler"]>[1]) => Promise<unknown>;
 };
 
 const mutationSpecs: MutationSpec[] = [
@@ -32,7 +36,8 @@ const mutationSpecs: MutationSpec[] = [
     title: "Clone Quality Profile",
     description: "Clone a quality profile using the provided body.",
     method: "POST",
-    path: "qualityprofile"
+    path: "qualityprofile",
+    customHandler: cloneQualityProfile
   },
   {
     name: "delete_quality_profile",
@@ -53,7 +58,8 @@ const mutationSpecs: MutationSpec[] = [
     title: "Update Custom Format Score",
     description: "Update custom format score data using the provided body.",
     method: "PUT",
-    path: (args) => `customformat/${args.id}`
+    path: "qualityprofile",
+    customHandler: updateCustomFormatScore
   },
   {
     name: "bulk_update_scores",
@@ -61,7 +67,8 @@ const mutationSpecs: MutationSpec[] = [
     description: "Bulk update custom format scores from body.updates.",
     method: "PUT",
     path: "customformat",
-    bulk: true
+    bulk: true,
+    customHandler: bulkUpdateScores
   },
   {
     name: "update_quality_definition",
@@ -111,6 +118,10 @@ export function createMutationTools(): ToolDefinition[] {
         return { applied: false, message: "Mutating tools require confirm=true." };
       }
 
+      if (spec.customHandler) {
+        return spec.customHandler(args, context);
+      }
+
       if (spec.bulk) {
         const updates = Array.isArray(args.body.updates) ? args.body.updates : [];
         if (updates.length === 0) {
@@ -142,4 +153,92 @@ export function createMutationTools(): ToolDefinition[] {
       return { applied: true, app: args.app, endpoint: path, result };
     }
   }));
+}
+
+async function cloneQualityProfile(args: MutationArgs, context: Parameters<ToolDefinition["handler"]>[1]): Promise<unknown> {
+  const body = { ...args.body };
+  if (args.id !== undefined) {
+    const source = await clientFor(context.config, args.app).request<JsonRecord>(`qualityprofile/${args.id}`);
+    delete source.id;
+    Object.assign(source, body);
+    if (!source.name || source.name === body.name) {
+      source.name = typeof body.name === "string" && body.name.trim() ? body.name : `${String((source as JsonRecord).name ?? "Quality Profile")} Copy`;
+    }
+    const result = await clientFor(context.config, args.app).request("qualityprofile", { method: "POST", body: source });
+    return { applied: true, app: args.app, endpoint: "qualityprofile", clonedFrom: args.id, result };
+  }
+
+  const result = await clientFor(context.config, args.app).request("qualityprofile", { method: "POST", body });
+  return { applied: true, app: args.app, endpoint: "qualityprofile", result };
+}
+
+async function updateCustomFormatScore(args: MutationArgs, context: Parameters<ToolDefinition["handler"]>[1]): Promise<unknown> {
+  const qualityProfileId = requiredNumber(args.body.qualityProfileId, "body.qualityProfileId");
+  const customFormatId = requiredNumber(args.id ?? args.body.customFormatId ?? args.body.formatId ?? args.body.format, "id or body.customFormatId");
+  const score = requiredNumber(args.body.score, "body.score");
+  const profile = await clientFor(context.config, args.app).request<JsonRecord>(`qualityprofile/${qualityProfileId}`);
+  const updated = updateProfileFormatScore(profile, customFormatId, score);
+  const result = await clientFor(context.config, args.app).request(`qualityprofile/${qualityProfileId}`, {
+    method: "PUT",
+    body: updated
+  });
+  return { applied: true, app: args.app, endpoint: `qualityprofile/${qualityProfileId}`, customFormatId, score, result };
+}
+
+async function bulkUpdateScores(args: MutationArgs, context: Parameters<ToolDefinition["handler"]>[1]): Promise<unknown> {
+  const qualityProfileId = requiredNumber(args.body.qualityProfileId, "body.qualityProfileId");
+  const updates = Array.isArray(args.body.updates) ? args.body.updates : [];
+  if (updates.length === 0) {
+    throw new Error("bulk_update_scores requires body.updates with at least one score update.");
+  }
+  const profile = await clientFor(context.config, args.app).request<JsonRecord>(`qualityprofile/${qualityProfileId}`);
+  let updated = profile;
+  const applied = [];
+  for (const update of updates) {
+    if (!update || typeof update !== "object") {
+      throw new Error("Each score update must be an object.");
+    }
+    const record = update as JsonRecord;
+    const customFormatId = requiredNumber(record.customFormatId ?? record.formatId ?? record.format ?? record.id, "updates[].customFormatId");
+    const score = requiredNumber(record.score, "updates[].score");
+    updated = updateProfileFormatScore(updated, customFormatId, score);
+    applied.push({ customFormatId, score });
+  }
+  const result = await clientFor(context.config, args.app).request(`qualityprofile/${qualityProfileId}`, {
+    method: "PUT",
+    body: updated
+  });
+  return { applied: applied.length, app: args.app, endpoint: `qualityprofile/${qualityProfileId}`, updates: applied, result };
+}
+
+function updateProfileFormatScore(profile: JsonRecord, customFormatId: number, score: number): JsonRecord {
+  const formatItems = profile.formatItems;
+  if (!Array.isArray(formatItems)) {
+    throw new Error("Quality profile does not contain formatItems; this app/version may not support custom format scores.");
+  }
+  let found = false;
+  const nextFormatItems = formatItems.map((item) => {
+    if (!item || typeof item !== "object") {
+      return item;
+    }
+    const record = item as JsonRecord;
+    const rawFormatId = record.format ?? record.formatId ?? record.id;
+    if (Number(rawFormatId) !== customFormatId) {
+      return item;
+    }
+    found = true;
+    return { ...record, score };
+  });
+  if (!found) {
+    throw new Error(`Custom format ${customFormatId} is not present in quality profile ${String(profile.id ?? "")}.`);
+  }
+  return { ...profile, formatItems: nextFormatItems };
+}
+
+function requiredNumber(value: unknown, name: string): number {
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numberValue)) {
+    throw new Error(`${name} must be a number.`);
+  }
+  return numberValue;
 }

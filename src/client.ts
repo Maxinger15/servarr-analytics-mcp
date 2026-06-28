@@ -39,7 +39,7 @@ export class ServarrClient {
 
   async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
     const appConfig = getAppConfig(this.config, this.app);
-    const normalizedPath = path.startsWith("/") ? path : `/api/v3/${path}`;
+    const normalizedPath = path.startsWith("/") ? path : `${appConfig.apiBasePath}/${path}`;
     const url = new URL(normalizedPath, `${appConfig.baseUrl}/`);
     appendQuery(url, options.query);
 

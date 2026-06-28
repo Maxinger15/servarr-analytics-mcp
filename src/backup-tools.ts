@@ -21,6 +21,24 @@ const backupEndpoints = [
   "config/host"
 ] as const;
 
+const collectionEndpoints = new Set<string>([
+  "qualityprofile",
+  "qualitydefinition",
+  "customformat",
+  "delayprofile",
+  "tag",
+  "rootfolder",
+  "downloadclient",
+  "indexer",
+  "notification"
+]);
+
+const singletonEndpoints = new Set<string>([
+  "config/naming",
+  "config/mediamanagement",
+  "config/host"
+]);
+
 export function createBackupTools(): ToolDefinition[] {
   return [
     {
@@ -79,6 +97,9 @@ export function createBackupTools(): ToolDefinition[] {
         if (args.dryRun !== false || args.confirm !== true) {
           return { dryRun: true, operations, message: "Set dryRun=false and confirm=true to restore." };
         }
+        if (!args.app) {
+          throw new Error("Restoring a backup requires a specific app target.");
+        }
         return applyOperations(context.config, operations);
       }
     },
@@ -113,7 +134,7 @@ export function createBackupTools(): ToolDefinition[] {
       description: "Validate patch operations without applying them.",
       inputSchema: patchSchema,
       async handler(args) {
-        return { valid: true, operations: args.operations.length, dryRun: args.dryRun };
+        return validatePatchOperations(args.operations);
       }
     },
     {
@@ -122,7 +143,7 @@ export function createBackupTools(): ToolDefinition[] {
       description: "Show patch operations that would be applied.",
       inputSchema: patchSchema,
       async handler(args) {
-        return { dryRun: true, operations: args.operations };
+        return { dryRun: true, validation: validatePatchOperations(args.operations), operations: args.operations };
       }
     },
     {
@@ -134,6 +155,7 @@ export function createBackupTools(): ToolDefinition[] {
         if (args.dryRun !== false || args.confirm !== true) {
           return { dryRun: true, operations: args.operations, message: "Set dryRun=false and confirm=true to apply." };
         }
+        validatePatchOperations(args.operations);
         return applyOperations(context.config, args.operations);
       }
     }
@@ -156,11 +178,63 @@ function backupToPatch(backup: BackupFile, onlyApp?: AppName): PatchOperation[] 
     for (const endpoint of backupEndpoints) {
       const body = backup.data[`${app}:${endpoint}`];
       if (body !== undefined && !(body && typeof body === "object" && "error" in body)) {
-        operations.push({ app, method: "PUT", path: endpoint, body });
+        operations.push(...backupEndpointToOperations(app, endpoint, body));
       }
     }
   }
   return operations;
+}
+
+function backupEndpointToOperations(app: AppName, endpoint: string, body: unknown): PatchOperation[] {
+  if (singletonEndpoints.has(endpoint)) {
+    return [{ app, method: "PUT", path: endpoint, body }];
+  }
+
+  if (!Array.isArray(body)) {
+    return collectionEndpoints.has(endpoint) && hasId(body)
+      ? [{ app, method: "PUT", path: `${endpoint}/${body.id}`, body }]
+      : [];
+  }
+
+  if (!collectionEndpoints.has(endpoint)) {
+    return [];
+  }
+
+  return body
+    .filter(hasId)
+    .map((item) => ({ app, method: "PUT" as const, path: `${endpoint}/${item.id}`, body: item }));
+}
+
+export function validatePatchOperations(operations: PatchOperation[]): { valid: true; operations: number } {
+  for (const operation of operations) {
+    const normalizedPath = operation.path.replace(/^\/+/, "");
+    const [collection, id, extra] = normalizedPath.split("/");
+    const singleton = `${collection}/${id}`;
+
+    if (extra) {
+      throw new Error(`Nested patch paths are not supported: ${operation.path}`);
+    }
+    if (singletonEndpoints.has(singleton)) {
+      if (operation.method !== "PUT") {
+        throw new Error(`Singleton endpoint ${singleton} only supports PUT patches.`);
+      }
+      continue;
+    }
+    if (!collectionEndpoints.has(collection ?? "")) {
+      throw new Error(`Patch path is not in the safe allowlist: ${operation.path}`);
+    }
+    if (operation.method !== "POST" && !id) {
+      throw new Error(`Patch operation ${operation.method} ${operation.path} requires a specific item id.`);
+    }
+    if (operation.method !== "DELETE" && operation.body === undefined) {
+      throw new Error(`Patch operation ${operation.method} ${operation.path} requires a body.`);
+    }
+  }
+  return { valid: true, operations: operations.length };
+}
+
+function hasId(value: unknown): value is { id: string | number } {
+  return Boolean(value && typeof value === "object" && "id" in value && (typeof (value as { id: unknown }).id === "string" || typeof (value as { id: unknown }).id === "number"));
 }
 
 async function applyOperations(config: Parameters<typeof clientFor>[0], operations: PatchOperation[]): Promise<unknown> {

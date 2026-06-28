@@ -4,6 +4,11 @@ import { APPS, type AppConfig, type AppName, type RuntimeConfig } from "./types.
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_BACKUP_DIR = ".servarr-analytics-backups";
+const DEFAULT_API_BASE_PATH: Record<AppName, string> = {
+  sonarr: "/api/v3",
+  radarr: "/api/v3",
+  prowlarr: "/api/v1"
+};
 
 export function normalizeBaseUrl(value: string, name: string): string {
   try {
@@ -24,6 +29,7 @@ function envName(app: AppName, suffix: string): string {
 function parseAppConfig(env: NodeJS.ProcessEnv, app: AppName): AppConfig | undefined {
   const baseUrl = env[envName(app, "URL")];
   const apiKey = env[envName(app, "API_KEY")];
+  const apiBasePath = env[envName(app, "API_BASE_PATH")] ?? DEFAULT_API_BASE_PATH[app];
 
   if (!baseUrl && !apiKey) {
     return undefined;
@@ -36,8 +42,17 @@ function parseAppConfig(env: NodeJS.ProcessEnv, app: AppName): AppConfig | undef
   return {
     app,
     baseUrl: normalizeBaseUrl(baseUrl, envName(app, "URL")),
-    apiKey
+    apiKey,
+    apiBasePath: normalizeApiBasePath(apiBasePath, envName(app, "API_BASE_PATH"))
   };
+}
+
+export function normalizeApiBasePath(value: string, name: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/api/")) {
+    throw new Error(`${name} must start with /api/`);
+  }
+  return `/${trimmed.split("/").filter(Boolean).join("/")}`;
 }
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {

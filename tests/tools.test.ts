@@ -32,4 +32,28 @@ describe("tool registry", () => {
       operations: [{ app: "sonarr", method: "PUT", path: "config/naming", body: {} }]
     })).toMatchObject({ dryRun: true });
   });
+
+  it("rejects app-specific tools before calling unsupported endpoints", async () => {
+    const tool = createTools().find((candidate) => candidate.name === "get_quality_profiles");
+    if (!tool) {
+      throw new Error("get_quality_profiles is not registered");
+    }
+
+    await expect(tool.handler({
+      app: "prowlarr"
+    }, {
+      config: {
+        timeoutMs: 1000,
+        backupDir: "/tmp/backups",
+        apps: {
+          prowlarr: {
+            app: "prowlarr",
+            baseUrl: "http://prowlarr:9696",
+            apiKey: "secret",
+            apiBasePath: "/api/v1"
+          }
+        }
+      }
+    })).rejects.toThrow(/not supported for prowlarr/);
+  });
 });

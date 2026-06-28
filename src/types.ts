@@ -8,6 +8,7 @@ export interface AppConfig {
   app: AppName;
   baseUrl: string;
   apiKey: string;
+  apiBasePath: string;
 }
 
 export interface RuntimeConfig {
@@ -73,4 +74,11 @@ export interface PatchOperation {
   method: Exclude<HttpMethod, "GET">;
   path: string;
   body?: unknown;
+}
+
+export interface CursorPayload {
+  app: AppName;
+  path: string;
+  options: CommonQueryOptions;
+  query?: Record<string, unknown>;
 }

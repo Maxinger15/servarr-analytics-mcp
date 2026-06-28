@@ -1,9 +1,17 @@
 import * as z from "zod/v4";
-import { clientFor } from "./client.js";
-import { configuredApps } from "./config.js";
-import { frequency, sumByPath } from "./response.js";
+import { shapeResult } from "./response.js";
 import { optionalAppOptionsSchema } from "./schemas.js";
-import type { AppName, RuntimeConfig, ToolDefinition } from "./types.js";
+import {
+  averageSize,
+  bytesBy,
+  countBy,
+  groupHistoryByMonth,
+  profileNameById,
+  readDatasets,
+  successRateByIndexer,
+  totalStorageBytes
+} from "./servarr-data.js";
+import type { CommonQueryOptions, RuntimeConfig, ToolDefinition } from "./types.js";
 
 const simulationNames = [
   "simulate_quality_profile_change",
@@ -30,92 +38,8 @@ const simulationSchema = optionalAppOptionsSchema.extend({
   target: z.record(z.string(), z.unknown()).optional()
 });
 
-async function appList(config: RuntimeConfig, app?: AppName): Promise<AppName[]> {
-  return app ? [app] : configuredApps(config);
-}
-
-async function library(config: RuntimeConfig, app: AppName): Promise<unknown[]> {
-  if (app === "radarr") {
-    return asArray(await clientFor(config, app).request("movie"));
-  }
-  if (app === "sonarr") {
-    return asArray(await clientFor(config, app).request("series"));
-  }
-  return asArray(await clientFor(config, app).request("indexer"));
-}
-
-async function history(config: RuntimeConfig, app: AppName): Promise<unknown[]> {
-  return asArray(await clientFor(config, app).request("history", { query: { page: 1, pageSize: 500, sortKey: "date", sortDirection: "descending" } }));
-}
-
-function asArray(value: unknown): unknown[] {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (Array.isArray(record.records)) {
-      return record.records;
-    }
-  }
-  return [];
-}
-
-async function simulate(name: string, args: z.infer<typeof simulationSchema>, config: RuntimeConfig): Promise<unknown> {
-  const apps = await appList(config, args.app);
-  const analyses = await Promise.all(
-    apps.map(async (app) => {
-      const items = await library(config, app);
-      const totalBytes =
-        sumByPath(items, "movieFile.size") +
-        sumByPath(items, "episodeFile.size") +
-        sumByPath(items, "statistics.sizeOnDisk");
-      return {
-        app,
-        simulation: name,
-        affectedCandidates: items.length,
-        currentStorageBytes: totalBytes,
-        estimatedStorageDeltaBytes: name.includes("storage") || name.includes("codec") ? Math.round(totalBytes * -0.12) : 0,
-        dryRun: true,
-        proposedChange: args.proposedChange ?? {},
-        target: args.target ?? {}
-      };
-    })
-  );
-  return { simulation: name, apps: analyses };
-}
-
-async function report(name: string, args: z.infer<typeof optionalAppOptionsSchema>, config: RuntimeConfig): Promise<unknown> {
-  const apps = await appList(config, args.app);
-  const reports = await Promise.all(
-    apps.map(async (app) => {
-      const items = await library(config, app);
-      const events = await history(config, app).catch(() => []);
-      return {
-        app,
-        report: name,
-        generatedAt: new Date().toISOString(),
-        itemCount: items.length,
-        recentEvents: events.length,
-        topQualities: frequency(items, "qualityProfileId").slice(0, 10),
-        topIndexers: frequency(events, "indexer").slice(0, 10),
-        recommendations: recommendationsFor(name, items.length, events.length)
-      };
-    })
-  );
-  return { report: name, apps: reports };
-}
-
-function recommendationsFor(name: string, itemCount: number, eventCount: number): string[] {
-  const recommendations = [`Review ${name.replaceAll("_", " ")} with the returned structured data before applying changes.`];
-  if (itemCount === 0) {
-    recommendations.push("No library items were returned; verify app configuration and API permissions.");
-  }
-  if (eventCount === 0 && name.includes("tracker")) {
-    recommendations.push("No recent history was returned; widen the time window or verify history retention.");
-  }
-  return recommendations;
-}
+type SimulationArgs = z.infer<typeof simulationSchema>;
+type ReportArgs = z.infer<typeof optionalAppOptionsSchema>;
 
 export function createSimulationAndReportTools(): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
@@ -127,7 +51,7 @@ export function createSimulationAndReportTools(): ToolDefinition[] {
       description: `Run a dry-run ${name.replaceAll("_", " ")} simulation.`,
       inputSchema: simulationSchema,
       async handler(args, context) {
-        return simulate(name, args, context.config);
+        return shapeResult(await simulate(name, args, context.config), args as CommonQueryOptions, { tool: name });
       }
     });
   }
@@ -139,12 +63,140 @@ export function createSimulationAndReportTools(): ToolDefinition[] {
       description: `Generate ${name.replaceAll("_", " ")}.`,
       inputSchema: optionalAppOptionsSchema,
       async handler(args, context) {
-        return report(name, args, context.config);
+        return shapeResult(await report(name, args, context.config), args as CommonQueryOptions, { tool: name });
       }
     });
   }
 
   return tools;
+}
+
+async function simulate(name: string, args: SimulationArgs, config: RuntimeConfig): Promise<unknown> {
+  const datasets = await readDatasets(config, args.app);
+  return {
+    simulation: name,
+    dryRun: true,
+    apps: datasets.map((dataset) => {
+      const profileNames = profileNameById(dataset.qualityProfiles);
+      const targetProfileId = numberFrom(args.target?.qualityProfileId ?? args.proposedChange?.qualityProfileId);
+      const sourceProfileId = numberFrom(args.target?.sourceQualityProfileId ?? args.proposedChange?.sourceQualityProfileId);
+      const codecPattern = stringFrom(args.target?.codec ?? args.proposedChange?.codec);
+      const candidatesByProfile = sourceProfileId
+        ? dataset.library.filter((item) => item.qualityProfileId === sourceProfileId)
+        : dataset.library;
+      const nonEfficientCodec = dataset.library.filter((item) => item.codec && !/265|hevc|av1/i.test(item.codec));
+      const cutoffCandidates = dataset.cutoffUnmet.length;
+
+      return {
+        app: dataset.app,
+        proposedChange: args.proposedChange ?? {},
+        target: args.target ?? {},
+        affectedCandidates: affectedCandidateCount(name, candidatesByProfile.length, nonEfficientCodec.length, cutoffCandidates),
+        currentStorageBytes: totalStorageBytes(dataset.library),
+        estimatedStorageDeltaBytes: estimateStorageDelta(name, nonEfficientCodec),
+        sourceProfile: sourceProfileId ? { id: sourceProfileId, name: profileNames.get(sourceProfileId) ?? "unknown" } : undefined,
+        targetProfile: targetProfileId ? { id: targetProfileId, name: profileNames.get(targetProfileId) ?? "unknown" } : undefined,
+        codecStrategy: codecPattern ? { requestedCodec: codecPattern, matchingItems: dataset.library.filter((item) => item.codec?.toLowerCase().includes(codecPattern.toLowerCase())).length } : undefined,
+        notes: simulationNotes(name)
+      };
+    })
+  };
+}
+
+async function report(name: string, args: ReportArgs, config: RuntimeConfig): Promise<unknown> {
+  const datasets = await readDatasets(config, args.app);
+  return {
+    report: name,
+    generatedAt: new Date().toISOString(),
+    apps: datasets.map((dataset) => {
+      const failed = dataset.history.filter((event) => event.eventType.toLowerCase().includes("fail"));
+      const storageBytes = totalStorageBytes(dataset.library);
+      const recommendations = recommendationsFor(dataset, name);
+      return {
+        app: dataset.app,
+        itemCount: dataset.library.length,
+        storageBytes,
+        healthIssues: dataset.health.length,
+        queueItems: dataset.queue.length,
+        cutoffUnmet: dataset.cutoffUnmet.length,
+        missingFiles: dataset.library.filter((item) => item.hasFile === false).length,
+        failedDownloads: failed.length,
+        averageReleaseBytes: averageSize(dataset.history),
+        qualityProfiles: countBy(dataset.library, (item) => item.qualityProfileId).slice(0, 10),
+        qualities: countBy(dataset.library, (item) => item.quality).slice(0, 10),
+        codecs: countBy(dataset.library, (item) => item.codec).slice(0, 10),
+        storageByCodec: bytesBy(dataset.library, (item) => item.codec, (item) => item.sizeOnDisk).slice(0, 10),
+        indexerSuccess: successRateByIndexer(dataset.history).slice(0, 10),
+        monthlyStatistics: groupHistoryByMonth(dataset.history).slice(0, 12),
+        failedByIndexer: bytesBy(failed, (event) => event.indexer, (event) => event.size ?? 0).slice(0, 10),
+        recommendations
+      };
+    })
+  };
+}
+
+function affectedCandidateCount(name: string, profileCandidates: number, codecCandidates: number, cutoffCandidates: number): number {
+  if (name.includes("codec") || name.includes("storage")) {
+    return codecCandidates;
+  }
+  if (name.includes("cutoff") || name.includes("upgrade")) {
+    return cutoffCandidates;
+  }
+  return profileCandidates;
+}
+
+function estimateStorageDelta(name: string, candidates: Array<{ sizeOnDisk: number }>): number {
+  if (!name.includes("storage") && !name.includes("codec")) {
+    return 0;
+  }
+  const candidateBytes = candidates.reduce((total, item) => total + item.sizeOnDisk, 0);
+  return -Math.round(candidateBytes * 0.35);
+}
+
+function recommendationsFor(dataset: Awaited<ReturnType<typeof readDatasets>>[number], reportName: string): string[] {
+  const recommendations: string[] = [];
+  if (dataset.health.length > 0) {
+    recommendations.push("Resolve current Servarr health issues before applying bulk changes.");
+  }
+  if (dataset.cutoffUnmet.length > 0 && reportName.includes("quality")) {
+    recommendations.push("Review cutoff-unmet items before changing profile cutoffs.");
+  }
+  if (dataset.history.some((event) => event.eventType.toLowerCase().includes("fail"))) {
+    recommendations.push("Inspect failed downloads by indexer and download client before tuning indexer priority.");
+  }
+  if (dataset.library.some((item) => item.codec && !/265|hevc|av1/i.test(item.codec) && item.sizeOnDisk > 5_000_000_000)) {
+    recommendations.push("Large non-HEVC/AV1 files are good candidates for a codec or size strategy simulation.");
+  }
+  if (recommendations.length === 0) {
+    recommendations.push("No high-confidence recommendation was detected from the current sampled data.");
+  }
+  return recommendations;
+}
+
+function simulationNotes(name: string): string[] {
+  const notes = ["Simulation only reads current Servarr data and does not mutate any app."];
+  if (name.includes("storage") || name.includes("codec")) {
+    notes.push("Storage deltas are estimates and assume replacement files are roughly 35% smaller.");
+  }
+  if (name.includes("custom_format") || name.includes("score")) {
+    notes.push("Custom format impact is estimated from currently matched file formats and configured formats.");
+  }
+  return notes;
+}
+
+function numberFrom(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function stringFrom(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function titleFromName(name: string): string {

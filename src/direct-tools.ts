@@ -3,9 +3,11 @@ import { clientFor } from "./client.js";
 import { configuredApps } from "./config.js";
 import { shapeResult } from "./response.js";
 import { appOptionsSchema, commonOptionsSchema, idSchema } from "./schemas.js";
-import type { AppName, CommonQueryOptions, ToolDefinition } from "./types.js";
+import type { AppName, CommonQueryOptions, CursorPayload, ToolDefinition } from "./types.js";
 
 type AnyArgs = Record<string, any>;
+const MEDIA_APPS: AppName[] = ["sonarr", "radarr"];
+const SONARR_ONLY: AppName[] = ["sonarr"];
 
 interface DirectToolSpec {
   name: string;
@@ -14,6 +16,7 @@ interface DirectToolSpec {
   path: string | ((args: AnyArgs) => string);
   method?: "GET" | "POST";
   app?: AppName | ((args: AnyArgs) => AppName);
+  supportedApps?: AppName[];
   schema?: z.ZodType;
   query?: (args: AnyArgs) => Record<string, unknown>;
 }
@@ -31,16 +34,20 @@ function directTool(spec: DirectToolSpec): ToolDefinition {
     async handler(args, context) {
       const castArgs = args as AnyArgs;
       const app = typeof spec.app === "function" ? spec.app(castArgs) : spec.app ?? appFromArgs(castArgs);
+      if (spec.supportedApps && !spec.supportedApps.includes(app)) {
+        throw new Error(`${spec.name} is not supported for ${app}. Supported apps: ${spec.supportedApps.join(", ")}.`);
+      }
       const path = typeof spec.path === "function" ? spec.path(castArgs) : spec.path;
       const query = spec.query?.(castArgs);
       const data = await clientFor(context.config, app).request(path, {
         method: spec.method ?? "GET",
         ...(query ? { query } : {})
       });
-      const nextCursor = encodeCursor(app, path, {
+      const nextOptions = {
         ...(castArgs as CommonQueryOptions),
         page: ((castArgs.page as number | undefined) ?? 1) + 1
-      });
+      };
+      const nextCursor = encodeCursor(app, path, nextOptions, nextPageQuery(query, nextOptions.page));
       return shapeResult(data, castArgs as CommonQueryOptions, { app, endpoint: path, nextCursor });
     }
   };
@@ -69,38 +76,44 @@ const appReadTools: DirectToolSpec[] = [
     name: "get_quality_profiles",
     title: "Get Quality Profiles",
     description: "List quality profiles.",
-    path: "qualityprofile"
+    path: "qualityprofile",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_quality_profile",
     title: "Get Quality Profile",
     description: "Return a single quality profile by id.",
     path: (args) => `qualityprofile/${args.id}`,
-    schema: idSchema
+    schema: idSchema,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_quality_definitions",
     title: "Get Quality Definitions",
     description: "List quality definitions.",
-    path: "qualitydefinition"
+    path: "qualitydefinition",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_custom_formats",
     title: "Get Custom Formats",
     description: "List custom formats.",
-    path: "customformat"
+    path: "customformat",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_language_profiles",
     title: "Get Language Profiles",
     description: "List language profiles when supported by the app.",
-    path: "languageprofile"
+    path: "languageprofile",
+    supportedApps: SONARR_ONLY
   },
   {
     name: "get_delay_profiles",
     title: "Get Delay Profiles",
     description: "List delay profiles.",
-    path: "delayprofile"
+    path: "delayprofile",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_tags",
@@ -112,7 +125,8 @@ const appReadTools: DirectToolSpec[] = [
     name: "get_root_folders",
     title: "Get Root Folders",
     description: "List root folders.",
-    path: "rootfolder"
+    path: "rootfolder",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_download_clients",
@@ -136,19 +150,22 @@ const appReadTools: DirectToolSpec[] = [
     name: "get_metadata_profiles",
     title: "Get Metadata Profiles",
     description: "List metadata profiles when supported by the app.",
-    path: "metadataprofile"
+    path: "metadataprofile",
+    supportedApps: SONARR_ONLY
   },
   {
     name: "get_naming_config",
     title: "Get Naming Config",
     description: "Return naming configuration.",
-    path: "config/naming"
+    path: "config/naming",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_media_management_config",
     title: "Get Media Management Config",
     description: "Return media management configuration.",
-    path: "config/mediamanagement"
+    path: "config/mediamanagement",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_disk_space",
@@ -216,7 +233,8 @@ const appReadTools: DirectToolSpec[] = [
     title: "Get Blocklist",
     description: "Return blocklist records.",
     path: "blocklist",
-    query: historyQuery
+    query: historyQuery,
+    supportedApps: MEDIA_APPS
   }
 ];
 
@@ -379,6 +397,8 @@ function historyQuery(args: AnyArgs): Record<string, unknown> {
   return {
     page: args.page ?? 1,
     pageSize: args.pageSize ?? 100,
+    ...(args.from ? { startDate: args.from } : {}),
+    ...(args.to ? { endDate: args.to } : {}),
     sortKey: "date",
     sortDirection: "descending"
   };
@@ -432,13 +452,14 @@ export function createCoreTools(): ToolDefinition[] {
       description: "Continue a paged query from a cursor produced by a previous tool response.",
       inputSchema: z.object({ cursor: z.string().min(1) }),
       async handler(args, context) {
-        const decoded = JSON.parse(Buffer.from(args.cursor, "base64url").toString("utf8")) as {
-          app: AppName;
-          path: string;
-          options: CommonQueryOptions;
+        const decoded = JSON.parse(Buffer.from(args.cursor, "base64url").toString("utf8")) as CursorPayload;
+        const data = await clientFor(context.config, decoded.app).request(decoded.path, decoded.query ? { query: decoded.query } : {});
+        const nextOptions = {
+          ...decoded.options,
+          page: ((decoded.options.page as number | undefined) ?? 1) + 1
         };
-        const data = await clientFor(context.config, decoded.app).request(decoded.path);
-        return shapeResult(data, decoded.options, { app: decoded.app, endpoint: decoded.path });
+        const nextCursor = encodeCursor(decoded.app, decoded.path, nextOptions, nextPageQuery(decoded.query, nextOptions.page));
+        return shapeResult(data, decoded.options, { app: decoded.app, endpoint: decoded.path, nextCursor });
       }
     }
   ];
@@ -452,6 +473,13 @@ export function createCoreTools(): ToolDefinition[] {
   ];
 }
 
-export function encodeCursor(app: AppName, path: string, options: CommonQueryOptions): string {
-  return Buffer.from(JSON.stringify({ app, path, options }), "utf8").toString("base64url");
+export function encodeCursor(app: AppName, path: string, options: CommonQueryOptions, query?: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify({ app, path, options, query }), "utf8").toString("base64url");
+}
+
+function nextPageQuery(query: Record<string, unknown> | undefined, page: number | undefined): Record<string, unknown> | undefined {
+  if (!query) {
+    return undefined;
+  }
+  return { ...query, page };
 }

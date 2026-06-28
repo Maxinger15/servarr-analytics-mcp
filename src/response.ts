@@ -66,15 +66,24 @@ function extractItems(data: unknown): { items: unknown[]; serverPaged: boolean; 
   }
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
-    for (const key of ["records", "items", "results"]) {
-      if (Array.isArray(record[key])) {
-        const totalRecords = typeof record.totalRecords === "number" ? record.totalRecords : undefined;
-        return {
-          items: record[key] as unknown[],
-          serverPaged: key === "records" && typeof record.page === "number",
-          ...(totalRecords === undefined ? {} : { totalRecords })
-        };
-      }
+    if (Array.isArray(record.records)) {
+      const totalRecords = typeof record.totalRecords === "number" ? record.totalRecords : undefined;
+      return {
+        items: record.records as unknown[],
+        serverPaged: typeof record.page === "number",
+        ...(totalRecords === undefined ? {} : { totalRecords })
+      };
+    }
+    if (Array.isArray(record.results)) {
+      return { items: record.results as unknown[], serverPaged: false };
+    }
+    if (Array.isArray(record.items) && (typeof record.page === "number" || typeof record.totalRecords === "number")) {
+      const totalRecords = typeof record.totalRecords === "number" ? record.totalRecords : undefined;
+      return {
+        items: record.items as unknown[],
+        serverPaged: typeof record.page === "number",
+        ...(totalRecords === undefined ? {} : { totalRecords })
+      };
     }
   }
   return undefined;

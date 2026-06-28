@@ -60,4 +60,22 @@ describe("shapeResult", () => {
     expect(shaped.meta.returnedRecords).toBe(2);
     expect(shaped.meta.serverPaged).toBe(true);
   });
+
+  it("does not treat singleton objects with nested items as collections", () => {
+    const profile = {
+      id: 7,
+      name: "HD",
+      items: [
+        { quality: { name: "HDTV-1080p" }, allowed: true }
+      ]
+    };
+
+    const shaped = shapeResult(profile, { detail: "raw", pageSize: 1 }) as {
+      data: { id: number; name: string; items: unknown[] };
+      meta: Record<string, unknown>;
+    };
+
+    expect(shaped.data).toEqual(profile);
+    expect(shaped.meta).toEqual({});
+  });
 });

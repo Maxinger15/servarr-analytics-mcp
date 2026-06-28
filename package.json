@@ -1,0 +1,54 @@
+{
+  "name": "servarr-analytics-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Sonarr, Radarr, and Prowlarr analytics, simulation, backup, and bulk operations.",
+  "type": "module",
+  "license": "MIT",
+  "author": "",
+  "homepage": "https://github.com/OWNER/servarr-analytics-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/servarr-analytics-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OWNER/servarr-analytics-mcp/issues"
+  },
+  "bin": {
+    "servarr-analytics-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "ci": "npm run lint && npm run test && npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sonarr",
+    "radarr",
+    "prowlarr",
+    "servarr"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0-alpha.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^22.19.2",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.49.0",
+    "vitest": "^4.0.15"
+  }
+}

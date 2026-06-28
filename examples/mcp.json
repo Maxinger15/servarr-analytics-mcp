@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "servarr-analytics": {
+      "command": "npx",
+      "args": ["-y", "servarr-analytics-mcp"],
+      "env": {
+        "SONARR_URL": "http://localhost:8989",
+        "SONARR_API_KEY": "your-sonarr-api-key",
+        "RADARR_URL": "http://localhost:7878",
+        "RADARR_API_KEY": "your-radarr-api-key",
+        "PROWLARR_URL": "http://localhost:9696",
+        "PROWLARR_API_KEY": "your-prowlarr-api-key"
+      }
+    }
+  }
+}

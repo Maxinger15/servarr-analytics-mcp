@@ -1,0 +1,18 @@
+services:
+  servarr-analytics-mcp:
+    image: ghcr.io/OWNER/servarr-analytics-mcp:latest
+    stdin_open: true
+    tty: false
+    environment:
+      SONARR_URL: http://sonarr:8989
+      SONARR_API_KEY: your-sonarr-api-key
+      RADARR_URL: http://radarr:7878
+      RADARR_API_KEY: your-radarr-api-key
+      PROWLARR_URL: http://prowlarr:9696
+      PROWLARR_API_KEY: your-prowlarr-api-key
+      SERVARR_TIMEOUT_MS: "30000"
+    volumes:
+      - servarr-analytics-backups:/app/.servarr-analytics-backups
+
+volumes:
+  servarr-analytics-backups:

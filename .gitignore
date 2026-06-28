@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.servarr-analytics-backups/
+npm-debug.log*

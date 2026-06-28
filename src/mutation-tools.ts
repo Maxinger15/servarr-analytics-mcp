@@ -126,7 +126,7 @@ export function createMutationTools(): ToolDefinition[] {
   return mutationSpecs.map((spec) => ({
     name: spec.name,
     title: spec.title,
-    description: `${spec.description} Requires confirm=true.`,
+    description: `${spec.description} Requires confirm=true${spec.bulk ? " and dryRun=false" : ""}.`,
     inputSchema: mutationSchema,
     async handler(args, context) {
       if (args.confirm !== true) {
@@ -209,24 +209,38 @@ async function bulkUpdateScores(args: MutationArgs, context: Parameters<ToolDefi
   if (updates.length === 0) {
     throw new Error("bulk_update_scores requires body.updates with at least one score update.");
   }
-  const profile = await clientFor(context.config, args.app).request<JsonRecord>(`qualityprofile/${qualityProfileId}`);
-  let updated = profile;
-  const applied = [];
-  for (const update of updates) {
+  const planned = updates.map((update) => {
     if (!update || typeof update !== "object") {
       throw new Error("Each score update must be an object.");
     }
     const record = update as JsonRecord;
-    const customFormatId = requiredNumber(record.customFormatId ?? record.formatId ?? record.format ?? record.id, "updates[].customFormatId");
-    const score = requiredNumber(record.score, "updates[].score");
+    return {
+      customFormatId: requiredNumber(record.customFormatId ?? record.formatId ?? record.format ?? record.id, "updates[].customFormatId"),
+      score: requiredNumber(record.score, "updates[].score")
+    };
+  });
+
+  if (args.dryRun !== false) {
+    return {
+      dryRun: true,
+      applied: 0,
+      app: args.app,
+      endpoint: `qualityprofile/${qualityProfileId}`,
+      updates: planned,
+      message: "Bulk operations require dryRun=false in addition to confirm=true."
+    };
+  }
+
+  const profile = await clientFor(context.config, args.app).request<JsonRecord>(`qualityprofile/${qualityProfileId}`);
+  let updated = profile;
+  for (const { customFormatId, score } of planned) {
     updated = updateProfileFormatScore(updated, customFormatId, score);
-    applied.push({ customFormatId, score });
   }
   const result = await clientFor(context.config, args.app).request(`qualityprofile/${qualityProfileId}`, {
     method: "PUT",
     body: updated
   });
-  return { applied: applied.length, app: args.app, endpoint: `qualityprofile/${qualityProfileId}`, updates: applied, result };
+  return { applied: planned.length, app: args.app, endpoint: `qualityprofile/${qualityProfileId}`, updates: planned, result };
 }
 
 function updateProfileFormatScore(profile: JsonRecord, customFormatId: number, score: number): JsonRecord {

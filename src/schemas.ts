@@ -36,6 +36,7 @@ export const confirmSchema = z.object({
 export const mutationSchema = appOptionsSchema.extend({
   id: z.union([z.string(), z.number()]).optional(),
   body: z.record(z.string(), z.unknown()),
+  dryRun: z.boolean().default(true).optional(),
   confirm: z.literal(true)
 });
 

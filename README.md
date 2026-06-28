@@ -149,9 +149,11 @@ Defaults protect the client context window:
 
 ## Write Safety
 
-Mutating tools require `confirm: true`. Restore and patch application also require `dryRun: false`.
+Mutating tools require `confirm: true`. Restore, patch application, and bulk score updates also require `dryRun: false`.
 
 Restore and patch operations are constrained by a safe endpoint allowlist. Collection updates such as quality profiles, custom formats, download clients, indexers, notifications, tags, and root folders must target a specific item id, for example `qualityprofile/3`. Singleton config endpoints such as `config/naming` and `config/mediamanagement` may be updated directly. A real backup restore also requires a specific `app` target.
+
+`bulk_update_scores` targets one explicit quality profile through `body.qualityProfileId` and one or more explicit custom format ids in `body.updates`. Without `dryRun: false`, it returns the planned score changes and does not call Servarr.
 
 Examples:
 

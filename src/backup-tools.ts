@@ -16,8 +16,12 @@ const backupEndpoints = [
   "downloadclient",
   "indexer",
   "notification",
+  "metadata",
+  "releaseprofile",
   "config/naming",
   "config/mediamanagement",
+  "config/indexer",
+  "config/downloadclient",
   "config/host"
 ] as const;
 
@@ -30,12 +34,16 @@ const collectionEndpoints = new Set<string>([
   "rootfolder",
   "downloadclient",
   "indexer",
-  "notification"
+  "notification",
+  "metadata",
+  "releaseprofile"
 ]);
 
 const singletonEndpoints = new Set<string>([
   "config/naming",
   "config/mediamanagement",
+  "config/indexer",
+  "config/downloadclient",
   "config/host"
 ]);
 

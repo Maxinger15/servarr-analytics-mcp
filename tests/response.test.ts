@@ -39,4 +39,25 @@ describe("shapeResult", () => {
 
     expect(shaped.data).toHaveLength(500);
   });
+
+  it("does not double-page server-paged Servarr responses", () => {
+    const shaped = shapeResult({
+      page: 2,
+      pageSize: 2,
+      totalRecords: 4,
+      records: [
+        { id: 3 },
+        { id: 4 }
+      ]
+    }, {
+      detail: "verbose",
+      page: 2,
+      pageSize: 2
+    }) as { records: unknown[]; meta: { totalRecords: number; returnedRecords: number; serverPaged: boolean } };
+
+    expect(shaped.records).toEqual([{ id: 3 }, { id: 4 }]);
+    expect(shaped.meta.totalRecords).toBe(4);
+    expect(shaped.meta.returnedRecords).toBe(2);
+    expect(shaped.meta.serverPaged).toBe(true);
+  });
 });

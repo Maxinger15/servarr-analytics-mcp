@@ -150,8 +150,8 @@ const appReadTools: DirectToolSpec[] = [
     name: "get_metadata_profiles",
     title: "Get Metadata Profiles",
     description: "List metadata profiles when supported by the app.",
-    path: "metadataprofile",
-    supportedApps: SONARR_ONLY
+    path: "metadata",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_naming_config",
@@ -171,7 +171,8 @@ const appReadTools: DirectToolSpec[] = [
     name: "get_disk_space",
     title: "Get Disk Space",
     description: "Return disk space information.",
-    path: "diskspace"
+    path: "diskspace",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "get_health",
@@ -353,7 +354,7 @@ const prowlarrTools: DirectToolSpec[] = [
     title: "Get Prowlarr Indexer Stats",
     description: "Return Prowlarr indexer statistics.",
     app: "prowlarr",
-    path: "indexer/stats",
+    path: "indexerstats",
     schema: commonOptionsSchema
   },
   {

@@ -60,15 +60,20 @@ export function pickFields<T>(item: T, fields?: string[]): T | Record<string, un
   return picked;
 }
 
-function extractItems(data: unknown): unknown[] | undefined {
+function extractItems(data: unknown): { items: unknown[]; serverPaged: boolean; totalRecords?: number } | undefined {
   if (Array.isArray(data)) {
-    return data;
+    return { items: data, serverPaged: false };
   }
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
     for (const key of ["records", "items", "results"]) {
       if (Array.isArray(record[key])) {
-        return record[key] as unknown[];
+        const totalRecords = typeof record.totalRecords === "number" ? record.totalRecords : undefined;
+        return {
+          items: record[key] as unknown[],
+          serverPaged: key === "records" && typeof record.page === "number",
+          ...(totalRecords === undefined ? {} : { totalRecords })
+        };
       }
     }
   }
@@ -124,28 +129,30 @@ export function sumByPath(items: unknown[], path: string): number {
 
 export function shapeResult(data: unknown, options: CommonQueryOptions = {}, meta: Record<string, unknown> = {}): unknown {
   const detail = options.detail ?? "normal";
-  const items = extractItems(data);
+  const extracted = extractItems(data);
 
-  if (!items) {
+  if (!extracted) {
     return { detail, meta, data };
   }
 
+  const items = extracted.items;
   const filtered = filterByDate(items, options);
   const { page, pageSize, limit } = normalizePaging(options);
   const cappedLimit = detail === "raw" ? Math.min(limit ?? MAX_RAW_ITEMS, MAX_RAW_ITEMS) : limit;
   const start = (page - 1) * pageSize;
-  const selected = filtered.slice(start, start + pageSize);
+  const selected = extracted.serverPaged ? filtered : filtered.slice(start, start + pageSize);
   const limited = cappedLimit ? selected.slice(0, cappedLimit) : selected;
   const projected = limited.map((item) => pickFields(item, options.fields));
   const sampleSize = Math.max(0, Math.min(options.sampleRecords ?? 5, 50));
 
   const baseMeta = {
     ...meta,
-    totalRecords: items.length,
+    totalRecords: extracted.totalRecords ?? items.length,
     filteredRecords: filtered.length,
     returnedRecords: projected.length,
     page,
     pageSize,
+    serverPaged: extracted.serverPaged || undefined,
     rawCap: detail === "raw" ? MAX_RAW_ITEMS : undefined
   };
 

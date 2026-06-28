@@ -1,7 +1,7 @@
 import * as z from "zod/v4";
 import { clientFor } from "./client.js";
 import { mutationSchema } from "./schemas.js";
-import type { ToolDefinition } from "./types.js";
+import type { AppName, ToolDefinition } from "./types.js";
 
 type MutationArgs = z.infer<typeof mutationSchema>;
 type JsonRecord = Record<string, unknown>;
@@ -13,8 +13,11 @@ type MutationSpec = {
   method: "POST" | "PUT" | "DELETE";
   path: string | ((args: MutationArgs) => string);
   bulk?: boolean;
+  supportedApps?: AppName[];
   customHandler?: (args: MutationArgs, context: Parameters<ToolDefinition["handler"]>[1]) => Promise<unknown>;
 };
+
+const MEDIA_APPS: AppName[] = ["sonarr", "radarr"];
 
 const mutationSpecs: MutationSpec[] = [
   {
@@ -22,14 +25,16 @@ const mutationSpecs: MutationSpec[] = [
     title: "Update Quality Profile",
     description: "Update a quality profile by id.",
     method: "PUT",
-    path: (args) => `qualityprofile/${args.id}`
+    path: (args) => `qualityprofile/${args.id}`,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "create_quality_profile",
     title: "Create Quality Profile",
     description: "Create a quality profile.",
     method: "POST",
-    path: "qualityprofile"
+    path: "qualityprofile",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "clone_quality_profile",
@@ -37,6 +42,7 @@ const mutationSpecs: MutationSpec[] = [
     description: "Clone a quality profile using the provided body.",
     method: "POST",
     path: "qualityprofile",
+    supportedApps: MEDIA_APPS,
     customHandler: cloneQualityProfile
   },
   {
@@ -44,14 +50,16 @@ const mutationSpecs: MutationSpec[] = [
     title: "Delete Quality Profile",
     description: "Delete a quality profile by id.",
     method: "DELETE",
-    path: (args) => `qualityprofile/${args.id}`
+    path: (args) => `qualityprofile/${args.id}`,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_custom_format",
     title: "Update Custom Format",
     description: "Update a custom format by id.",
     method: "PUT",
-    path: (args) => `customformat/${args.id}`
+    path: (args) => `customformat/${args.id}`,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_custom_format_score",
@@ -59,6 +67,7 @@ const mutationSpecs: MutationSpec[] = [
     description: "Update custom format score data using the provided body.",
     method: "PUT",
     path: "qualityprofile",
+    supportedApps: MEDIA_APPS,
     customHandler: updateCustomFormatScore
   },
   {
@@ -68,6 +77,7 @@ const mutationSpecs: MutationSpec[] = [
     method: "PUT",
     path: "customformat",
     bulk: true,
+    supportedApps: MEDIA_APPS,
     customHandler: bulkUpdateScores
   },
   {
@@ -75,35 +85,40 @@ const mutationSpecs: MutationSpec[] = [
     title: "Update Quality Definition",
     description: "Update a quality definition by id.",
     method: "PUT",
-    path: (args) => `qualitydefinition/${args.id}`
+    path: (args) => `qualitydefinition/${args.id}`,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_delay_profile",
     title: "Update Delay Profile",
     description: "Update a delay profile by id.",
     method: "PUT",
-    path: (args) => `delayprofile/${args.id}`
+    path: (args) => `delayprofile/${args.id}`,
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_naming",
     title: "Update Naming",
     description: "Update naming configuration.",
     method: "PUT",
-    path: "config/naming"
+    path: "config/naming",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_media_management",
     title: "Update Media Management",
     description: "Update media management configuration.",
     method: "PUT",
-    path: "config/mediamanagement"
+    path: "config/mediamanagement",
+    supportedApps: MEDIA_APPS
   },
   {
     name: "update_restrictions",
     title: "Update Restrictions",
-    description: "Update release restrictions.",
+    description: "Update release profile restrictions.",
     method: "PUT",
-    path: (args) => `restriction/${args.id}`
+    path: (args) => `releaseprofile/${args.id}`,
+    supportedApps: MEDIA_APPS
   }
 ];
 
@@ -116,6 +131,9 @@ export function createMutationTools(): ToolDefinition[] {
     async handler(args, context) {
       if (args.confirm !== true) {
         return { applied: false, message: "Mutating tools require confirm=true." };
+      }
+      if (spec.supportedApps && !spec.supportedApps.includes(args.app)) {
+        throw new Error(`${spec.name} is not supported for ${args.app}. Supported apps: ${spec.supportedApps.join(", ")}.`);
       }
 
       if (spec.customHandler) {

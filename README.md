@@ -207,7 +207,7 @@ Publishing is handled by GitHub Actions when a GitHub Release is published.
 
 - npm publishes `servarr-analytics-mcp` through npm trusted publishing/OIDC.
 - GHCR publishes `ghcr.io/<owner>/servarr-analytics-mcp`.
-- The release tag must match `package.json`, for example `v0.1.0`.
+- The release tag must match `package.json`, for example `v0.1.1`.
 - The workflow runs lint, tests, and build before publishing.
 
 Before the first release:
@@ -216,4 +216,4 @@ Before the first release:
 2. Replace `OWNER` placeholders in docs/examples if desired.
 3. Verify the npm package name is available.
 4. Configure npm trusted publishing for `.github/workflows/release.yml`.
-5. Publish a GitHub Release tagged `v0.1.0`.
+5. Publish a GitHub Release tagged `v0.1.1`.

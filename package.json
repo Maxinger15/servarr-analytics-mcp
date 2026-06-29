@@ -1,6 +1,6 @@
 {
   "name": "servarr-analytics-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for Sonarr, Radarr, and Prowlarr analytics, simulation, backup, and bulk operations.",
   "type": "module",
   "license": "MIT",
@@ -14,7 +14,7 @@
     "url": "https://github.com/Maxinger15/servarr-analytics-mcp/issues"
   },
   "bin": {
-    "servarr-analytics-mcp": "./dist/index.js"
+    "servarr-analytics-mcp": "dist/index.js"
   },
   "files": [
     "dist",

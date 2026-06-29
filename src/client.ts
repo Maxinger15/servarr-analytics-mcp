@@ -1,5 +1,5 @@
 import { getAppConfig } from "./config.js";
-import type { AppName, RequestOptions, RuntimeConfig } from "./types.js";
+import type { AppName, PageResult, PaginationOptions, RequestOptions, RuntimeConfig } from "./types.js";
 
 export class ServarrApiError extends Error {
   constructor(
@@ -87,6 +87,50 @@ export class ServarrClient {
     }
   }
 
+  async requestPaged<T = unknown>(path: string, options: PaginationOptions = {}): Promise<PageResult<T>> {
+    const pageSize = Math.min(Math.max(1, options.pageSize ?? 100), 500);
+    const firstPage = Math.max(1, options.page ?? 1);
+    const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+    const records: T[] = [];
+    let page = firstPage;
+    let totalRecords: number | undefined;
+
+    while (true) {
+      const response = await this.request<unknown>(path, {
+        query: {
+          ...options.query,
+          page,
+          pageSize
+        }
+      });
+      const normalized = normalizePage<T>(response, page, pageSize);
+      totalRecords = normalized.totalRecords;
+      records.push(...normalized.records);
+
+      if (limit && records.length >= limit) {
+        return {
+          page: firstPage,
+          pageSize,
+          ...(totalRecords === undefined ? {} : { totalRecords }),
+          records: records.slice(0, limit)
+        };
+      }
+
+      const knownTotalReached = totalRecords !== undefined && records.length >= Math.max(0, totalRecords - (firstPage - 1) * pageSize);
+      const shortPage = normalized.records.length < pageSize;
+      if (knownTotalReached || shortPage || normalized.records.length === 0) {
+        return {
+          page: firstPage,
+          pageSize,
+          ...(totalRecords === undefined ? {} : { totalRecords }),
+          records
+        };
+      }
+
+      page += 1;
+    }
+  }
+
   async status(): Promise<unknown> {
     return this.request("system/status");
   }
@@ -106,4 +150,37 @@ function parseJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function normalizePage<T>(response: unknown, page: number, pageSize: number): PageResult<T> {
+  if (Array.isArray(response)) {
+    return {
+      page,
+      pageSize,
+      totalRecords: response.length,
+      records: response as T[]
+    };
+  }
+
+  if (response && typeof response === "object") {
+    const record = response as Record<string, unknown>;
+    if (Array.isArray(record.records)) {
+      const responsePage = typeof record.page === "number" ? record.page : page;
+      const responsePageSize = typeof record.pageSize === "number" ? record.pageSize : pageSize;
+      const totalRecords = typeof record.totalRecords === "number" ? record.totalRecords : undefined;
+      return {
+        page: responsePage,
+        pageSize: responsePageSize,
+        ...(totalRecords === undefined ? {} : { totalRecords }),
+        records: record.records as T[]
+      };
+    }
+  }
+
+  return {
+    page,
+    pageSize,
+    totalRecords: 1,
+    records: [response as T]
+  };
 }

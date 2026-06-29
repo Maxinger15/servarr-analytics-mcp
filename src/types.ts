@@ -36,6 +36,20 @@ export interface RequestOptions {
   body?: unknown;
 }
 
+export interface PageResult<T = unknown> {
+  page: number;
+  pageSize: number;
+  totalRecords?: number;
+  records: T[];
+}
+
+export interface PaginationOptions {
+  page?: number;
+  pageSize?: number;
+  limit?: number;
+  query?: Record<string, unknown>;
+}
+
 export interface ApiOperation {
   app?: AppName;
   path: string;

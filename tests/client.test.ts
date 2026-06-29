@@ -62,4 +62,72 @@ describe("ServarrClient", () => {
       expect.any(Object)
     );
   });
+
+  it("collects paged records until total records are reached", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        page: 1,
+        pageSize: 2,
+        totalRecords: 3,
+        records: [{ id: 1 }, { id: 2 }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        page: 2,
+        pageSize: 2,
+        totalRecords: 3,
+        records: [{ id: 3 }]
+      }), { status: 200 }));
+
+    const result = await new ServarrClient(config, "sonarr").requestPaged("history", {
+      pageSize: 2,
+      query: { sortKey: "date" }
+    });
+
+    expect(result).toEqual({
+      page: 1,
+      pageSize: 2,
+      totalRecords: 3,
+      records: [{ id: 1 }, { id: 2 }, { id: 3 }]
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://sonarr:8989/api/v3/history?sortKey=date&page=1&pageSize=2");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("http://sonarr:8989/api/v3/history?sortKey=date&page=2&pageSize=2");
+  });
+
+  it("honors paged request limits", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        page: 1,
+        pageSize: 2,
+        totalRecords: 4,
+        records: [{ id: 1 }, { id: 2 }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        page: 2,
+        pageSize: 2,
+        totalRecords: 4,
+        records: [{ id: 3 }, { id: 4 }]
+      }), { status: 200 }));
+
+    const result = await new ServarrClient(config, "sonarr").requestPaged("history", {
+      pageSize: 2,
+      limit: 3
+    });
+
+    expect(result.records).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  it("normalizes array responses as one page", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([{ id: 1 }]), { status: 200 })
+    );
+
+    const result = await new ServarrClient(config, "sonarr").requestPaged("qualityprofile");
+
+    expect(result).toEqual({
+      page: 1,
+      pageSize: 100,
+      totalRecords: 1,
+      records: [{ id: 1 }]
+    });
+  });
 });

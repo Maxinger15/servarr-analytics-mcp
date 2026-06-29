@@ -1,4 +1,5 @@
 import { getAppConfig } from "./config.js";
+import { PACKAGE_VERSION } from "./version.js";
 import type { AppName, PageResult, PaginationOptions, RequestOptions, RuntimeConfig } from "./types.js";
 
 export class ServarrApiError extends Error {
@@ -54,7 +55,7 @@ export class ServarrClient {
           "Accept": "application/json",
           "Content-Type": "application/json",
           "X-Api-Key": appConfig.apiKey,
-          "User-Agent": "servarr-analytics-mcp/0.1.0"
+          "User-Agent": `servarr-analytics-mcp/${PACKAGE_VERSION}`
         }
       };
       if (options.body !== undefined) {

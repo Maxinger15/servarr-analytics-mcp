@@ -2,6 +2,7 @@ import { createAnalyticsTools } from "./analytics-tools.js";
 import { createBackupTools } from "./backup-tools.js";
 import { createCoreTools } from "./direct-tools.js";
 import { createMutationTools } from "./mutation-tools.js";
+import { createProfileImpactTools } from "./profile-impact-tools.js";
 import { createSimulationAndReportTools } from "./simulation-report-tools.js";
 import type { ToolDefinition } from "./types.js";
 
@@ -10,6 +11,7 @@ export function createTools(): ToolDefinition[] {
     ...createCoreTools(),
     ...createAnalyticsTools(),
     ...createSimulationAndReportTools(),
+    ...createProfileImpactTools(),
     ...createBackupTools(),
     ...createMutationTools()
   ];
@@ -122,6 +124,7 @@ export const expectedToolNames = [
   "simulate_storage_growth",
   "simulate_upgrade_impact",
   "simulate_codec_strategy",
+  "simulate_profile_impact",
   "create_backup",
   "list_backups",
   "restore_backup",

@@ -12,6 +12,7 @@ import {
   successRateByIndexer,
   totalStorageBytes
 } from "./servarr-data.js";
+import type { MediaFileItem } from "./servarr-data.js";
 import type { CommonQueryOptions, RuntimeConfig, ToolDefinition } from "./types.js";
 
 type AnalyticsArgs = z.infer<typeof optionalAppOptionsSchema>;
@@ -82,7 +83,7 @@ export function createAnalyticsTools(): ToolDefinition[] {
 }
 
 async function summarizeLibrary(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
   return {
     apps: datasets.map((dataset) => ({
       app: dataset.app,
@@ -92,16 +93,16 @@ async function summarizeLibrary(args: AnalyticsArgs, config: RuntimeConfig): Pro
       storageBytes: totalStorageBytes(dataset.library),
       queueItems: dataset.queue.length,
       healthIssues: dataset.health.length,
-      qualities: countBy(dataset.library, (item) => item.quality).slice(0, 10),
-      codecs: countBy(dataset.library, (item) => item.codec).slice(0, 10),
+      qualities: countBy(fileMetadataSource(dataset), (item) => item.quality).slice(0, 10),
+      codecs: countBy(fileMetadataSource(dataset), (item) => item.codec).slice(0, 10),
       profiles: withProfileNames(dataset)
     }))
   };
 }
 
 async function itemDistribution(args: AnalyticsArgs, config: RuntimeConfig, field: keyof Awaited<ReturnType<typeof readDatasets>>[number]["library"][number]): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
-  return { apps: datasets.map((dataset) => ({ app: dataset.app, field, distribution: countBy(dataset.library, (item) => item[field] as string | number | undefined) })) };
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
+  return { apps: datasets.map((dataset) => ({ app: dataset.app, field, distribution: countBy(dataset.mediaFiles, (item) => item[field as keyof MediaFileItem] as string | number | undefined) })) };
 }
 
 async function profileUsage(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
@@ -115,13 +116,13 @@ async function cutoffUnmetByProfile(args: AnalyticsArgs, config: RuntimeConfig):
 }
 
 async function upgradeCandidates(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
   return {
     apps: datasets.map((dataset) => ({
       app: dataset.app,
-      missingOrNoFile: dataset.library.filter((item) => item.hasFile === false),
+      missingOrNoFile: missingOrNoFileItems(dataset),
       cutoffUnmet: dataset.cutoffUnmet,
-      largeNonHevc: dataset.library.filter((item) => item.sizeOnDisk > 5_000_000_000 && item.codec && !/265|hevc/i.test(item.codec)).slice(0, 50)
+      largeNonHevc: dataset.mediaFiles.filter((item) => item.size > 5_000_000_000 && item.codec && !/265|hevc|av1/i.test(item.codec)).slice(0, 50)
     }))
   };
 }
@@ -155,15 +156,15 @@ async function redundantQualityProfiles(args: AnalyticsArgs, config: RuntimeConf
 }
 
 async function customFormatHits(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
-  return { apps: datasets.map((dataset) => ({ app: dataset.app, hits: countBy(dataset.library.flatMap((item) => item.customFormats), (item) => item) })) };
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
+  return { apps: datasets.map((dataset) => ({ app: dataset.app, hits: countBy(dataset.mediaFiles.flatMap((item) => item.customFormats), (item) => item) })) };
 }
 
 async function customFormatMisses(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
   return {
     apps: datasets.map((dataset) => {
-      const hitNames = new Set(dataset.library.flatMap((item) => item.customFormats));
+      const hitNames = new Set(dataset.mediaFiles.flatMap((item) => item.customFormats));
       return { app: dataset.app, misses: dataset.customFormats.filter((format) => !hitNames.has(format.name)) };
     })
   };
@@ -192,8 +193,8 @@ async function storageUsage(args: AnalyticsArgs, config: RuntimeConfig): Promise
 }
 
 async function storageBy(args: AnalyticsArgs, config: RuntimeConfig, field: "codec" | "quality" | "qualityResolution"): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
-  return { apps: datasets.map((dataset) => ({ app: dataset.app, field, distribution: bytesBy(dataset.library, (item) => item[field], (item) => item.sizeOnDisk) })) };
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
+  return { apps: datasets.map((dataset) => ({ app: dataset.app, field, distribution: bytesBy(dataset.mediaFiles, (item) => item[field], (item) => item.size) })) };
 }
 
 async function growthStatistics(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
@@ -202,15 +203,16 @@ async function growthStatistics(args: AnalyticsArgs, config: RuntimeConfig): Pro
 }
 
 async function estimatedStorageSavings(args: AnalyticsArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
   return {
     apps: datasets.map((dataset) => {
-      const candidates = dataset.library.filter((item) => item.sizeOnDisk > 0 && item.codec && !/265|hevc/i.test(item.codec));
+      const candidates = dataset.mediaFiles.filter((item) => item.size > 0 && item.codec && !/265|hevc|av1/i.test(item.codec));
+      const candidateBytes = candidates.reduce((total, item) => total + item.size, 0);
       return {
         app: dataset.app,
         candidates: candidates.length,
-        candidateBytes: totalStorageBytes(candidates),
-        estimatedSavingsBytes: Math.round(totalStorageBytes(candidates) * 0.35),
+        candidateBytes,
+        estimatedSavingsBytes: Math.round(candidateBytes * 0.35),
         assumption: "Estimates a 35% reduction for non-HEVC/x265 files when replaced with efficient encodes."
       };
     })
@@ -290,6 +292,17 @@ function withProfileNames(dataset: Awaited<ReturnType<typeof readDatasets>>[numb
       ? { ...entry, value: names.get(profileId) ?? entry.value, profileId }
       : { ...entry, value: names.get(profileId) ?? entry.value };
   });
+}
+
+function fileMetadataSource(dataset: Awaited<ReturnType<typeof readDatasets>>[number]): MediaFileItem[] {
+  return dataset.mediaFiles;
+}
+
+function missingOrNoFileItems(dataset: Awaited<ReturnType<typeof readDatasets>>[number]): unknown[] {
+  if (dataset.app === "sonarr") {
+    return dataset.missing;
+  }
+  return dataset.library.filter((item) => item.hasFile === false);
 }
 
 function valueFromEvent(event: unknown, field: string): string | number | undefined {

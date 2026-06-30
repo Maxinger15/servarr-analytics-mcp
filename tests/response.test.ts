@@ -31,6 +31,21 @@ describe("shapeResult", () => {
     ]);
   });
 
+  it("groups nested array values", () => {
+    const shaped = shapeResult([
+      { id: 1, languages: [{ name: "German" }], customFormats: [{ name: "WEBRip-2160p" }] },
+      { id: 2, languages: [{ name: "English" }, { name: "German" }], customFormats: [{ name: "WEBRip-2160p" }] }
+    ], {
+      detail: "summary",
+      groupBy: "languages.name"
+    }) as { summary: { grouped: Array<{ value: string; count: number }> } };
+
+    expect(shaped.summary.grouped).toEqual([
+      { value: "German", count: 2 },
+      { value: "English", count: 1 }
+    ]);
+  });
+
   it("caps raw records", () => {
     const shaped = shapeResult(Array.from({ length: 1200 }, (_, id) => ({ id })), {
       detail: "raw",

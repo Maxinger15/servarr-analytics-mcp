@@ -11,6 +11,7 @@ import {
   successRateByIndexer,
   totalStorageBytes
 } from "./servarr-data.js";
+import type { MediaFileItem } from "./servarr-data.js";
 import type { CommonQueryOptions, RuntimeConfig, ToolDefinition } from "./types.js";
 
 const simulationNames = [
@@ -72,7 +73,8 @@ export function createSimulationAndReportTools(): ToolDefinition[] {
 }
 
 async function simulate(name: string, args: SimulationArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const usesMediaFiles = name.includes("custom_format") || name.includes("score") || name.includes("storage") || name.includes("codec");
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: usesMediaFiles });
   return {
     simulation: name,
     dryRun: true,
@@ -81,22 +83,35 @@ async function simulate(name: string, args: SimulationArgs, config: RuntimeConfi
       const targetProfileId = numberFrom(args.target?.qualityProfileId ?? args.proposedChange?.qualityProfileId);
       const sourceProfileId = numberFrom(args.target?.sourceQualityProfileId ?? args.proposedChange?.sourceQualityProfileId);
       const codecPattern = stringFrom(args.target?.codec ?? args.proposedChange?.codec);
+      const mediaFiles = dataset.mediaFiles;
+      const scoreFormats = formatNamesFromChange(args, dataset.customFormats);
+      const scoreCandidates = scoreFormats.length > 0
+        ? mediaFiles.filter((item) => item.customFormats.some((format) => scoreFormats.includes(format)))
+        : mediaFiles;
       const candidatesByProfile = sourceProfileId
         ? dataset.library.filter((item) => item.qualityProfileId === sourceProfileId)
         : dataset.library;
-      const nonEfficientCodec = dataset.library.filter((item) => item.codec && !/265|hevc|av1/i.test(item.codec));
+      const nonEfficientCodec = mediaFiles.filter((item) => item.codec && !/265|hevc|av1/i.test(item.codec));
       const cutoffCandidates = dataset.cutoffUnmet.length;
+      const currentStorageBytes = mediaFiles.length > 0 ? totalMediaFileBytes(mediaFiles) : totalStorageBytes(dataset.library);
 
       return {
         app: dataset.app,
         proposedChange: args.proposedChange ?? {},
         target: args.target ?? {},
-        affectedCandidates: affectedCandidateCount(name, candidatesByProfile.length, nonEfficientCodec.length, cutoffCandidates),
-        currentStorageBytes: totalStorageBytes(dataset.library),
+        affectedCandidates: affectedCandidateCount(name, candidatesByProfile.length, scoreCandidates.length, nonEfficientCodec.length, cutoffCandidates),
+        currentStorageBytes,
         estimatedStorageDeltaBytes: estimateStorageDelta(name, nonEfficientCodec),
         sourceProfile: sourceProfileId ? { id: sourceProfileId, name: profileNames.get(sourceProfileId) ?? "unknown" } : undefined,
         targetProfile: targetProfileId ? { id: targetProfileId, name: profileNames.get(targetProfileId) ?? "unknown" } : undefined,
-        codecStrategy: codecPattern ? { requestedCodec: codecPattern, matchingItems: dataset.library.filter((item) => item.codec?.toLowerCase().includes(codecPattern.toLowerCase())).length } : undefined,
+        codecStrategy: codecPattern ? { requestedCodec: codecPattern, matchingItems: mediaFiles.filter((item) => item.codec?.toLowerCase().includes(codecPattern.toLowerCase())).length } : undefined,
+        scoreImpact: name.includes("custom_format") || name.includes("score")
+          ? {
+              matchedFormats: scoreFormats,
+              matchedFiles: scoreCandidates.length,
+              scoreDistribution: countBy(scoreCandidates, (item) => item.customFormatScore)
+            }
+          : undefined,
         notes: simulationNotes(name)
       };
     })
@@ -104,7 +119,7 @@ async function simulate(name: string, args: SimulationArgs, config: RuntimeConfi
 }
 
 async function report(name: string, args: ReportArgs, config: RuntimeConfig): Promise<unknown> {
-  const datasets = await readDatasets(config, args.app);
+  const datasets = await readDatasets(config, args.app, { includeMediaFiles: true });
   return {
     report: name,
     generatedAt: new Date().toISOString(),
@@ -119,13 +134,13 @@ async function report(name: string, args: ReportArgs, config: RuntimeConfig): Pr
         healthIssues: dataset.health.length,
         queueItems: dataset.queue.length,
         cutoffUnmet: dataset.cutoffUnmet.length,
-        missingFiles: dataset.library.filter((item) => item.hasFile === false).length,
+        missingFiles: missingFileCount(dataset),
         failedDownloads: failed.length,
         averageReleaseBytes: averageSize(dataset.history),
         qualityProfiles: countBy(dataset.library, (item) => item.qualityProfileId).slice(0, 10),
-        qualities: countBy(dataset.library, (item) => item.quality).slice(0, 10),
-        codecs: countBy(dataset.library, (item) => item.codec).slice(0, 10),
-        storageByCodec: bytesBy(dataset.library, (item) => item.codec, (item) => item.sizeOnDisk).slice(0, 10),
+        qualities: countBy(dataset.mediaFiles, (item) => item.quality).slice(0, 10),
+        codecs: countBy(dataset.mediaFiles, (item) => item.codec).slice(0, 10),
+        storageByCodec: bytesBy(dataset.mediaFiles, (item) => item.codec, (item) => item.size).slice(0, 10),
         indexerSuccess: successRateByIndexer(dataset.history).slice(0, 10),
         monthlyStatistics: groupHistoryByMonth(dataset.history).slice(0, 12),
         failedByIndexer: bytesBy(failed, (event) => event.indexer, (event) => event.size ?? 0).slice(0, 10),
@@ -135,7 +150,10 @@ async function report(name: string, args: ReportArgs, config: RuntimeConfig): Pr
   };
 }
 
-function affectedCandidateCount(name: string, profileCandidates: number, codecCandidates: number, cutoffCandidates: number): number {
+function affectedCandidateCount(name: string, profileCandidates: number, scoreCandidates: number, codecCandidates: number, cutoffCandidates: number): number {
+  if (name.includes("custom_format") || name.includes("score")) {
+    return scoreCandidates;
+  }
   if (name.includes("codec") || name.includes("storage")) {
     return codecCandidates;
   }
@@ -145,12 +163,60 @@ function affectedCandidateCount(name: string, profileCandidates: number, codecCa
   return profileCandidates;
 }
 
-function estimateStorageDelta(name: string, candidates: Array<{ sizeOnDisk: number }>): number {
+function estimateStorageDelta(name: string, candidates: Array<{ size: number }>): number {
   if (!name.includes("storage") && !name.includes("codec")) {
     return 0;
   }
-  const candidateBytes = candidates.reduce((total, item) => total + item.sizeOnDisk, 0);
+  const candidateBytes = candidates.reduce((total, item) => total + item.size, 0);
   return -Math.round(candidateBytes * 0.35);
+}
+
+function totalMediaFileBytes(files: MediaFileItem[]): number {
+  return files.reduce((total, item) => total + item.size, 0);
+}
+
+function formatNamesFromChange(args: SimulationArgs, formats: Array<{ id?: number | undefined; name: string }>): string[] {
+  const byId = new Map(formats.filter((format) => format.id !== undefined).map((format) => [format.id as number, format.name]));
+  const names = new Set<string>();
+  const addName = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      names.add(value);
+    }
+  };
+  const addId = (value: unknown) => {
+    const id = numberFrom(value);
+    const name = id === undefined ? undefined : byId.get(id);
+    if (name) {
+      names.add(name);
+    }
+  };
+
+  for (const source of [args.target, args.proposedChange]) {
+    if (!source) {
+      continue;
+    }
+    addName(source.customFormatName);
+    addId(source.customFormatId);
+    const customFormatNames = source.customFormatNames;
+    if (Array.isArray(customFormatNames)) {
+      customFormatNames.forEach(addName);
+    }
+    const customFormatIds = source.customFormatIds;
+    if (Array.isArray(customFormatIds)) {
+      customFormatIds.forEach(addId);
+    }
+    const updates = source.updates;
+    if (Array.isArray(updates)) {
+      for (const update of updates) {
+        if (update && typeof update === "object") {
+          addName((update as Record<string, unknown>).customFormatName);
+          addId((update as Record<string, unknown>).customFormatId);
+        }
+      }
+    }
+  }
+
+  return [...names].sort((a, b) => a.localeCompare(b));
 }
 
 function recommendationsFor(dataset: Awaited<ReturnType<typeof readDatasets>>[number], reportName: string): string[] {
@@ -164,13 +230,20 @@ function recommendationsFor(dataset: Awaited<ReturnType<typeof readDatasets>>[nu
   if (dataset.history.some((event) => event.eventType.toLowerCase().includes("fail"))) {
     recommendations.push("Inspect failed downloads by indexer and download client before tuning indexer priority.");
   }
-  if (dataset.library.some((item) => item.codec && !/265|hevc|av1/i.test(item.codec) && item.sizeOnDisk > 5_000_000_000)) {
+  if (dataset.mediaFiles.some((item) => item.codec && !/265|hevc|av1/i.test(item.codec) && item.size > 5_000_000_000)) {
     recommendations.push("Large non-HEVC/AV1 files are good candidates for a codec or size strategy simulation.");
   }
   if (recommendations.length === 0) {
     recommendations.push("No high-confidence recommendation was detected from the current sampled data.");
   }
   return recommendations;
+}
+
+function missingFileCount(dataset: Awaited<ReturnType<typeof readDatasets>>[number]): number {
+  if (dataset.app === "sonarr") {
+    return dataset.missing.length;
+  }
+  return dataset.library.filter((item) => item.hasFile === false).length;
 }
 
 function simulationNotes(name: string): string[] {

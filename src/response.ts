@@ -32,6 +32,28 @@ function getPathValue(value: unknown, path: string): unknown {
   }, value);
 }
 
+function getPathValues(value: unknown, path: string): unknown[] {
+  let currentValues = [value];
+  for (const part of path.split(".")) {
+    const nextValues: unknown[] = [];
+    for (const current of currentValues) {
+      const expanded = Array.isArray(current) ? current : [current];
+      for (const item of expanded) {
+        if (item && typeof item === "object" && part in item) {
+          const next = (item as Record<string, unknown>)[part];
+          if (Array.isArray(next)) {
+            nextValues.push(...next);
+          } else {
+            nextValues.push(next);
+          }
+        }
+      }
+    }
+    currentValues = nextValues;
+  }
+  return currentValues;
+}
+
 function setPathValue(target: Record<string, unknown>, path: string, value: unknown): void {
   const parts = path.split(".");
   let current = target;
@@ -120,9 +142,12 @@ function filterByDate(items: unknown[], options: CommonQueryOptions): unknown[] 
 export function frequency(items: unknown[], path: string): Array<{ value: string; count: number }> {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const rawValue = getPathValue(item, path);
-    const value = rawValue === undefined || rawValue === null || rawValue === "" ? "unknown" : String(rawValue);
-    counts.set(value, (counts.get(value) ?? 0) + 1);
+    const rawValues = getPathValues(item, path);
+    const values = rawValues.length > 0 ? rawValues : [undefined];
+    for (const rawValue of values) {
+      const value = rawValue === undefined || rawValue === null || rawValue === "" ? "unknown" : String(rawValue);
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
   }
   return [...counts.entries()]
     .map(([value, count]) => ({ value, count }))

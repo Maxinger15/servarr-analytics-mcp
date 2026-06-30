@@ -27,6 +27,28 @@ export interface LibraryItem {
   raw: unknown;
 }
 
+export interface MediaFileItem {
+  app: AppName;
+  itemType: "movieFile" | "episodeFile";
+  id?: number | string | undefined;
+  parentId?: number | undefined;
+  seriesId?: number | undefined;
+  movieId?: number | undefined;
+  title: string;
+  qualityProfileId?: number | undefined;
+  size: number;
+  quality?: string | undefined;
+  qualityResolution?: number | undefined;
+  codec?: string | undefined;
+  audioCodec?: string | undefined;
+  hdr?: string | undefined;
+  releaseGroup?: string | undefined;
+  languages: string[];
+  customFormats: string[];
+  customFormatScore?: number | undefined;
+  raw: unknown;
+}
+
 export interface HistoryEvent {
   app: AppName;
   id?: number | string | undefined;
@@ -65,38 +87,48 @@ export interface CustomFormatSummary {
 export interface ServarrDataset {
   app: AppName;
   library: LibraryItem[];
+  mediaFiles: MediaFileItem[];
   history: HistoryEvent[];
   qualityProfiles: QualityProfileSummary[];
   customFormats: CustomFormatSummary[];
   cutoffUnmet: unknown[];
+  missing: unknown[];
   queue: unknown[];
   health: unknown[];
 }
 
-export async function readDatasets(config: RuntimeConfig, app?: AppName): Promise<ServarrDataset[]> {
-  const apps = app ? [app] : configuredApps(config);
-  return Promise.all(apps.map((name) => readDataset(config, name)));
+export interface DatasetReadOptions {
+  includeMediaFiles?: boolean;
 }
 
-export async function readDataset(config: RuntimeConfig, app: AppName): Promise<ServarrDataset> {
+export async function readDatasets(config: RuntimeConfig, app?: AppName, options: DatasetReadOptions = {}): Promise<ServarrDataset[]> {
+  const apps = app ? [app] : configuredApps(config);
+  return Promise.all(apps.map((name) => readDataset(config, name, options)));
+}
+
+export async function readDataset(config: RuntimeConfig, app: AppName, options: DatasetReadOptions = {}): Promise<ServarrDataset> {
   const client = clientFor(config, app);
-  const [libraryRaw, historyRaw, qualityProfilesRaw, customFormatsRaw, cutoffUnmetRaw, queueRaw, healthRaw] = await Promise.all([
+  const [libraryRaw, historyRaw, qualityProfilesRaw, customFormatsRaw, cutoffUnmetRaw, missingRaw, queueRaw, healthRaw] = await Promise.all([
     readLibraryRaw(config, app),
     client.request("history", { query: { page: 1, pageSize: 500, sortKey: "date", sortDirection: "descending" } }).catch(() => []),
     client.request("qualityprofile").catch(() => []),
     client.request("customformat").catch(() => []),
     app === "prowlarr" ? Promise.resolve([]) : client.request("wanted/cutoff", { query: { page: 1, pageSize: 500 } }).catch(() => []),
+    app === "prowlarr" ? Promise.resolve([]) : client.request("wanted/missing", { query: { page: 1, pageSize: 500 } }).catch(() => []),
     app === "prowlarr" ? Promise.resolve([]) : client.request("queue", { query: { page: 1, pageSize: 500 } }).catch(() => []),
     client.request("health").catch(() => [])
   ]);
+  const libraryItems = extractArray(libraryRaw);
 
   return {
     app,
-    library: extractArray(libraryRaw).map((item) => normalizeLibraryItem(app, item)),
+    library: libraryItems.map((item) => normalizeLibraryItem(app, item)),
+    mediaFiles: options.includeMediaFiles ? await readMediaFiles(config, app, libraryItems) : [],
     history: extractArray(historyRaw).map((item) => normalizeHistoryEvent(app, item)),
     qualityProfiles: extractArray(qualityProfilesRaw).map((item) => normalizeQualityProfile(app, item)),
     customFormats: extractArray(customFormatsRaw).map((item) => normalizeCustomFormat(app, item)),
     cutoffUnmet: extractArray(cutoffUnmetRaw),
+    missing: extractArray(missingRaw),
     queue: extractArray(queueRaw),
     health: extractArray(healthRaw)
   };
@@ -300,6 +332,77 @@ function normalizeLibraryItem(app: AppName, item: unknown): LibraryItem {
   };
 }
 
+async function readMediaFiles(config: RuntimeConfig, app: AppName, libraryItems: unknown[]): Promise<MediaFileItem[]> {
+  if (app === "radarr") {
+    return libraryItems.flatMap((item) => {
+      const movieFile = valueAt(item, "movieFile");
+      if (!movieFile || typeof movieFile !== "object") {
+        return [];
+      }
+      return [normalizeMediaFile(app, movieFile, item)];
+    });
+  }
+
+  if (app === "sonarr") {
+    const client = clientFor(config, app);
+    const series = libraryItems
+      .map((item) => ({ raw: item, id: firstNumber(item, ["id"]) }))
+      .filter((item): item is { raw: unknown; id: number } => item.id !== undefined);
+    const results = await mapWithConcurrency(series, 4, async (item) => {
+      const response = await client.request("episodefile", { query: { seriesId: item.id } }).catch(() => []);
+      return extractArray(response).map((file) => normalizeMediaFile(app, file, item.raw));
+    });
+    return results.flat();
+  }
+
+  return [];
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await run(items[currentIndex] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function normalizeMediaFile(app: AppName, file: unknown, parent: unknown): MediaFileItem {
+  const record = file && typeof file === "object" ? (file as RecordValue) : {};
+  const parentId = firstNumber(parent, ["id"]);
+  const fileId = typeof record.id === "number" || typeof record.id === "string" ? record.id : undefined;
+  const seriesId = app === "sonarr" ? firstNumber(file, ["seriesId"]) ?? parentId : undefined;
+  const movieId = app === "radarr" ? firstNumber(file, ["movieId"]) ?? parentId : undefined;
+
+  return {
+    app,
+    itemType: app === "sonarr" ? "episodeFile" : "movieFile",
+    id: fileId,
+    parentId,
+    seriesId,
+    movieId,
+    title: firstString(parent, ["title", "sortTitle", "name"]) ?? firstString(file, ["relativePath", "path", "sceneName"]) ?? "unknown",
+    qualityProfileId: firstNumber(parent, ["qualityProfileId"]),
+    size: firstNumber(file, ["size"]) ?? 0,
+    quality: firstString(file, ["quality.quality.name", "quality.name"]),
+    qualityResolution: firstNumber(file, ["quality.quality.resolution", "quality.resolution"]),
+    codec: firstString(file, ["mediaInfo.videoCodec", "videoCodec"]),
+    audioCodec: firstString(file, ["mediaInfo.audioCodec", "audioCodec"]),
+    hdr: firstString(file, ["mediaInfo.videoDynamicRange", "videoDynamicRange"]),
+    releaseGroup: firstString(file, ["releaseGroup"]),
+    languages: extractLanguageNames(file),
+    customFormats: [...new Set(extractCustomFormatNames(file))],
+    customFormatScore: firstNumber(file, ["customFormatScore"]),
+    raw: file
+  };
+}
+
 function normalizeHistoryEvent(app: AppName, item: unknown): HistoryEvent {
   const record = item && typeof item === "object" ? (item as RecordValue) : {};
   return {
@@ -351,6 +454,15 @@ function extractCustomFormatNames(item: unknown): string[] {
   return formats
     .map((format) => firstString(format, ["name"]))
     .filter((name): name is string => Boolean(name));
+}
+
+function extractLanguageNames(item: unknown): string[] {
+  const language = firstString(item, ["language.name"]);
+  const languages = valueAt(item, "languages");
+  const names = Array.isArray(languages)
+    ? languages.map((entry) => firstString(entry, ["name"])).filter((name): name is string => Boolean(name))
+    : [];
+  return [...new Set(language ? [language, ...names] : names)];
 }
 
 function extractProfileQualityNames(item: unknown): string[] {
